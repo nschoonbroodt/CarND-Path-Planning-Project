@@ -32,7 +32,9 @@ using json = nlohmann::json;
 #define LONG_TERM_INC 30.0
 #define NB_LONG_TERM 3
 #define MIN_SAFE_DISTANCE 30.0
-#define SPEED_MARGIN 5
+#define MIN_SAFE_DISTANCE_CHANGE 10.0
+#define SPEED_MARGIN 2
+#define OVERTAKE_DISTANCE 50
 /* End of Tuneable Parameters Section */
 
 /* State machine mode */
@@ -239,9 +241,11 @@ int main() {
   // mode
   int mode = NORMAL_MODE;
   int prev_lane = cur_lane;
+  double s_start_over = 0;
+  double v_start_over = 0;
 
   h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,
-               &cur_lane, &cur_tar_speed, &mode, &prev_lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+               &cur_lane, &cur_tar_speed, &mode, &prev_lane, &s_start_over, &v_start_over](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -304,11 +308,15 @@ int main() {
             }
             
             // Check other cars
+            if ((mode == OVERTAKE_LEFT || mode==OVERTAKE_RIGHT) && (last_s > s_start_over+NB_LONG_TERM*LONG_TERM_INC)) {
+                mode = NORMAL_MODE;
+            }
             bool detected = false;
             double other_speed = 1e10; // just an initial value
             for (int i=0; i<sensor_fusion.size(); ++i) {
                 double other_car_d = sensor_fusion[i][SF_D];
-                if ((other_car_d-2<(0.5+cur_lane)*LANE_WIDTH) && (other_car_d+2>(0.5+cur_lane)*LANE_WIDTH)) {
+//                if ((other_car_d-2<(0.5+cur_lane)*LANE_WIDTH) && (other_car_d+2>(0.5+cur_lane)*LANE_WIDTH)) {
+                if ((other_car_d-2<car_d) && (other_car_d+2>car_d)) {
                     // we share a lane
                     double vx = sensor_fusion[i][SF_DX];
                     double vy = sensor_fusion[i][SF_DY];
@@ -317,9 +325,9 @@ int main() {
                     
                     // future position
                     other_car_s += prev_size*DT*v;
-                    if ((other_car_s > last_s) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
+                    if ((other_car_s > car_s) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
                         detected = true;
-                        if (other_speed < v) {
+                        if (other_speed >= v) {
                             other_speed = v;
                         }
                         if (mode == NORMAL_MODE) {
@@ -335,6 +343,33 @@ int main() {
             }
             
             // If there is a car in front, check if we can take over
+            if (mode == CAR_IN_FRONT && cur_lane < 2) { // check on the right
+                bool can_change = true;
+                int tested_lane = cur_lane+1;
+                for (int i=0; i<sensor_fusion.size(); ++i) {
+                    double other_car_d = sensor_fusion[i][SF_D];
+                    if ((other_car_d-2<(0.5+tested_lane)*LANE_WIDTH) && (other_car_d+2>(0.5+tested_lane)*LANE_WIDTH)) {
+                        // car is on the tested lane
+                        double vx = sensor_fusion[i][SF_DX];
+                        double vy = sensor_fusion[i][SF_DY];
+                        double v = sqrt(vx*vx+vy*vy);
+                        double other_car_s = sensor_fusion[i][SF_S];
+                    
+                        // future position
+                        other_car_s += prev_size*DT*v;
+                        if ((other_car_s > last_s - MIN_SAFE_DISTANCE_CHANGE) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
+                            can_change = false;
+                        }
+                    }
+                }
+                if (can_change) {
+                    prev_lane = cur_lane;
+                    cur_lane = tested_lane;
+                    mode = OVERTAKE_RIGHT;
+                    s_start_over = last_s;
+                    v_start_over = car_speed;
+                }
+            }
             if (mode == CAR_IN_FRONT && cur_lane > 0) { // check on the left
                 bool can_change = true;
                 int tested_lane = cur_lane-1;
@@ -349,8 +384,8 @@ int main() {
                     
                         // future position
                         other_car_s += prev_size*DT*v;
-                        if ((other_car_s > car_s-MIN_SAFE_DISTANCE) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
-                            // CANNOT CHANGE
+                        if ((other_car_s > last_s-MIN_SAFE_DISTANCE_CHANGE) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
+                            can_change = false;
                         }
                     }
                 }
@@ -358,32 +393,11 @@ int main() {
                     prev_lane = cur_lane;
                     cur_lane = tested_lane;
                     mode = OVERTAKE_LEFT;
+                    s_start_over = last_s;
+                    v_start_over = car_speed;
                 }
             }
-/*            if (mode == CAR_IN_FRONT && cur_lane < 2) { // check on the right
-                int tested_lane = cur_lane+1;
-                for (int i=0; i<sensor_fusion.size(); ++i) {
-                    double other_car_d = sensor_fusion[i][SF_D];
-                    if ((other_car_d-2<(0.5+tested_lane)*LANE_WIDTH) && (other_car_d+2>(0.5+tested_lane)*LANE_WIDTH)) {
-                        // car is on the tested lane
-                        double vx = sensor_fusion[i][SF_DX];
-                        double vy = sensor_fusion[i][SF_DY];
-                        double v = sqrt(vx*vx+vy*vy);
-                        double other_car_s = sensor_fusion[i][SF_S];
-                    
-                        // future position
-                        other_car_s += prev_size*DT*v;
-                        if ((other_car_s > car_s-MIN_SAFE_DISTANCE) && (other_car_s-last_s < MIN_SAFE_DISTANCE)) {
-                            // CANNOT CHANGE
-                        } else {
-                            prev_lane = cur_lane;
-                            cur_lane = tested_lane;
-                            mode = OVERTAKE_RIGHT;
-                        }
-                    }
-                }
-            }
-  */          
+  
             if ((mode != NORMAL_MODE) && (cur_tar_speed+SPEED_MARGIN > other_speed)) {
                 cur_tar_speed -= 10*DT;
             } else if (cur_tar_speed <= TARGET_SPEED*M_PER_MILES/3600) {
@@ -420,7 +434,16 @@ int main() {
             
             // Long term points
             for (int i=1; i<=NB_LONG_TERM; ++i) {
-                vector<double> long_term = getXY(car_s+i*LONG_TERM_INC, LANE_WIDTH*(0.5+cur_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+                double long_term_d = LANE_WIDTH*(0.5+cur_lane);
+                double long_term_s = car_s + i*LONG_TERM_INC;
+                if (mode == OVERTAKE_LEFT || mode == OVERTAKE_RIGHT) {
+                    double frac = (long_term_s-s_start_over)/(OVERTAKE_DISTANCE*v_start_over/TARGET_SPEED);
+                    if (frac>1) frac = 1;
+                    if (frac<0) frac = 0;
+                    double interp_lane = frac*cur_lane + (1-frac)*prev_lane;
+                    long_term_d = LANE_WIDTH*(0.5+interp_lane);
+                }
+                vector<double> long_term = getXY(long_term_s, long_term_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
                 pts_x.push_back(long_term[0]);
                 pts_y.push_back(long_term[1]);
             }

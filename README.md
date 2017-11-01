@@ -82,3 +82,8 @@ Here is a video of the result:
 - Accelerate (or decelerate) faster. My current strategy for speed changing is really basic, there is room for improvements while still staying in the confort zone (you can see it with the initial acceleration, it could be a little faster)
 - Implement a long term strategy for overtaking. The current simple algorithm is looking "one car ahead", and tries to change lane to avoid that car, without looking if there are cars further in the new selected lane (it only looks if it safe to change, not if it's good to increase the speed in the long run. It's a better strategy in average than staying in the lane behind one slow car, but it's not necessarly always a better strategy, and there is a lot of room for improvements here)
 - Review the code architecture, use command line options to change parameters, ... (for now it's more a first prototype code, nothing really well organised, just "go enough" for small simulations)
+
+## Sources
+
+- Spline lib is coming from http://kluge.in-chemnitz.de/opensource/spline/
+- Lots of idea are coming from the project walkthrough in the classroom

@@ -1,140 +1,84 @@
 # CarND-Path-Planning-Project
-Self-Driving Car Engineer Nanodegree Program
-   
-### Simulator.
-You can download the Term3 Simulator which contains the Path Planning Project from the [releases tab (https://github.com/udacity/self-driving-car-sim/releases).
 
-### Goals
-In this project your goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. You will be provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 50 m/s^3.
+## Goal of the project
+The goal is to create a list of points separated by 0.02s that the simulated car will follow. The generated trajectory must respect several constraints:
 
-#### The map of the highway is in data/highway_map.txt
-Each waypoint in the list contains  [x,y,s,dx,dy] values. x and y are the waypoint's map coordinate position, the s value is the distance along the road to get to that waypoint in meters, the dx and dy values define the unit normal vector pointing outward of the highway loop.
+- Safe driving: avoid collision with other cars
+- Legal driving: stay below the speed limit (but close to it, except if trafic prevent it), drive in one of the 3 right lanes, not on the left side or outside of the road
+- Confortable driving: avoid large jerk and accelerations
+- Reasonable driving: stay in one lane if there is no need to change, but change lane (safely) when needed to overtake cars
 
-The highway's waypoints loop around so the frenet s value, distance along the road, goes from 0 to 6945.554.
+## Overview of the model
 
-## Basic Build Instructions
+On the top level, the model can be divided in two part. One part of the model implement a very basic state machine with four states:
 
-1. Clone this repo.
-2. Make a build directory: `mkdir build && cd build`
-3. Compile: `cmake .. && make`
-4. Run it: `./path_planning`.
+- Normal mode: the car drives freely on one lane at maximum speed (or accelerating toward this speed;
+- Car In Front mode: a car is detected in front of our car and close to it, in the same lane. In this mode, we will slow down to match (with a small margin) the speed of that car, and we will try to see if it can go in one of the overtake modes;
+- Overtake left: if we are in "Car In Front Mode", check the left lane (if there is one) to see if it's safe to change lane to overtake. If it's possible, generate a smooth trajectory for it;
+- Overtake right: same, but on the other side.
 
-Here is the data provided from the Simulator to the C++ Program
+The second part of the code is the trajectory generation. This trajectory need several inputs:
+- the previous trajectory (calculated in the previous step) or the car state, at the begining of the simulations
+- the target speed (depending on the mode)
+- the target road lateral position (the current lane, for normal and "car in front" modes, and something a little more advanced for the overtake modes
 
-#### Main car's localization Data (No Noise)
+Let's dive a little more in the details of these two parts.
 
-["x"] The car's x position in map coordinates
+## State machine
+The state machine is implemented between line 310 and 405. The state machine input is composed of two parts:
 
-["y"] The car's y position in map coordinates
+- our car state (position, velocity, and state machine mode)
+- all the other car states
 
-["s"] The car's s position in frenet coordinates
+The output of the state machine is 
+- the new mode
+- the target speed
+- the target lateral position (and the trajectory to follow in time for this position)
 
-["d"] The car's d position in frenet coordinates
+The initial mode is the Normal mode. In this mode, we will simply increase the speed to reach 49 mph (the cruise speed) and ask the trajectory generator to simply try to keep the current lateral position. The code for this mode is the speed change (line 404) and the transition checks to change mode (line 316 to 338), verifying if there is a car in front of us.
 
-["yaw"] The car's yaw angle in the map
+The state machine will only leave the normal mode if there is a car in front of us (actually if there is a car that will be in the future in front of our predicted trajectory) In that case, we transition to the next mode, the "Car In Front" mode. (Note: there could be a direct transition in the same cycle to one of the overtake mode, more on this later) In the "Car In Front" mode, we keep the same lane, but we change the target speed to reach the speed of the car in front of us (minus a margin). This is done to avoid a rear end collision, of course. From this mode, there are three possible outcomes: we stay in this mode (there is still a car in front and we still need to decelerate), we go back in normal mode (either the car changed lane, or we decelerated to much and we can accelerate again), or we move to one of the two overtake mode.
 
-["speed"] The car's speed in MPH
+The code for the "car in front" mode is mainly the code checking if we can move to overtake (340 to 400, but some of those lines are more related to the overtake modes, it's a little bit mixed), and also the deceleration code (line 402)
 
-#### Previous path data given to the Planner
+This transition to overtake mode occurs only under two conditions:
+- there is a lane on the target side (we don't go left if we are on the left lane...)
+- the lane is "safe": there is no car at our level or in front of us in the target lane
 
-//Note: Return the previous list but with processed points removed, can be a nice tool to show how far along
-the path has processed since last time. 
+When the transition to overtake mode occurs, the code remember the current S position of the car (actually not the current one, but the planned one at the end of the previous trajectory planning, but conceptually the idea is the same), and also the current speed (same remark) (lines 366-370 and lines 393-397) We also remember the current lane and the target lane. The s position and the speed will be used to generate a smooth line change trajectory (we will generate d as a function of s **d(s)**, changing over a distance depending on the speed. If the car is fast, the lane change will be over a larger s distance, to avoid large acceleration, but if the speed is low, we will do it over a smaller distance. The goal is to change lane in a small time)
 
-["previous_path_x"] The previous list of x points previously given to the simulator
+Note that we don't compute this **d(s)** trajectory here, we just memorize everything so that the trajectory planner can access this information. The final part of the state machine is the code allowing us to leave the overtake modes, line 311-312. We go back in normal mode once we know that we have reach the end of the maneuver.
 
-["previous_path_y"] The previous list of y points previously given to the simulator
+## Trajectory planner
+The trajectory planner is the rest of the code, from line 409 to 490. It is based mainly on the idea discussed in the classroom, in the project walkthrough video.
 
-#### Previous path's end s and d values 
+The first thing that I do is to get the last two points of the previous trajectory plan (at the initial step, I just use the current car position as a "last point" and generate a fake "second to last" point using the yaw angle). I put these two points in a list (lines 409-433)
 
-["end_path_s"] The previous list's last point's frenet s value
+One note here: I will only generated a few new points, I mainly reuse the previously generated trajectory. This help to keep a smooth trajectory. That's why I use these last two points.
 
-["end_path_d"] The previous list's last point's frenet d value
+The next thing I do is to generate a few long term points (lines 436-448). I just use 3 values separated by 30 meters for the s values, and for the d values, I use either:
+- a constant d in the center of the current lane, for Normal and "Car In Front" mode
+- a d value function of the s (the think that I have called **d(s)** in the previous section), if I am in one of the overtake mode (lines 439-444)
 
-#### Sensor Fusion Data, a list of all other car's attributes on the same side of the road. (No Noise)
+I add theses long term points in the list containing the last two points of the previous trajectory, and I transform these lists into local car coordinate (instead of global (x,y) coordinates) to make computations easier. (452-458)
 
-["sensor_fusion"] A 2d vector of cars and then that car's [car's unique ID, car's x position in map coordinates, car's y position in map coordinates, car's x velocity in m/s, car's y velocity in m/s, car's s position in frenet coordinates, car's d position in frenet coordinates. 
+Lines 461 and 462, I create a spline function fitted on these points.
 
-## Details
+Now I need to use this spline to generated the desired points, taking into account the fact that they must be spaced by 0.02s (50 points a second) and that I have a target speed coming from the state machine. I need first to compute the dx corresponding to my target speed, 0.02s and my spline function. This is done with a linearisation and using pythagore (473-478), and then I use this dx and the spline to compute the (x,y) point (and there is also the transformation back from local car coordinate to global x,y coordinates)(lines 481 to 490)
 
-1. The car uses a perfect controller and will visit every (x,y) point it recieves in the list every .02 seconds. The units for the (x,y) points are in meters and the spacing of the points determines the speed of the car. The vector going from a point to the next point in the list dictates the angle of the car. Acceleration both in the tangential and normal directions is measured along with the jerk, the rate of change of total Acceleration. The (x,y) point paths that the planner recieves should not have a total acceleration that goes over 10 m/s^2, also the jerk should not go over 50 m/s^3. (NOTE: As this is BETA, these requirements might change. Also currently jerk is over a .02 second interval, it would probably be better to average total acceleration over 1 second and measure jerk from that.
+That's it.
 
-2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this its a good idea to store the last points you have used so you can have a smooth transition. previous_path_x, and previous_path_y can be helpful for this transition since they show the last points given to the simulator controller with the processed points already removed. You would either return a path that extends this previous path or make sure to create a new path that has a smooth transition with this last path.
+## Result
 
-## Tips
+Here is a video of the result:
 
-A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file is really easy to use.
-
----
-
-## Dependencies
-
-* cmake >= 3.5
- * All OSes: [click here for installation instructions](https://cmake.org/install/)
-* make >= 4.1
-  * Linux: make is installed by default on most Linux distros
-  * Mac: [install Xcode command line tools to get make](https://developer.apple.com/xcode/features/)
-  * Windows: [Click here for installation instructions](http://gnuwin32.sourceforge.net/packages/make.htm)
-* gcc/g++ >= 5.4
-  * Linux: gcc / g++ is installed by default on most Linux distros
-  * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
-  * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets 
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
-
-## Editor Settings
-
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
-
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
-
-## Code Style
-
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
-
-## Project Instructions and Rubric
-
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
+[![Result in video](https://img.youtube.com/vi/93Q2h11JhgE/0.jpg)](https://www.youtube.com/watch?v=93Q2h11JhgE)
 
 
-## Call for IDE Profiles Pull Requests
+## Possible improvements
 
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
-
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
-
+- Refactor the state machine, could be three states, and the code could be more separated from the rest. And I could modularise the code of the different mode into different functions or methods.
+- Implement an hysteresis between "Normal mode" and "Car in Front mode", to avoid toggling between the two when we are juste at the limit.
+- Accelerate (or decelerate) faster. My current strategy for speed changing is really basic, there is room for improvements while still staying in the confort zone (you can see it with the initial acceleration, it could be a little faster)
+- Implement a long term strategy for overtaking. The current simple algorithm is looking "one car ahead", and tries to change lane to avoid that car, without looking if there are cars further in the new selected lane (it only looks if it safe to change, not if it's good to increase the speed in the long run. It's a better strategy in average than staying in the lane behind one slow car, but it's not necessarly always a better strategy, and there is a lot of room for improvements here)
+- Review the code architecture, use command line options to change parameters, ... (for now it's more a first prototype code, nothing really well organised, just "go enough" for small simulations)

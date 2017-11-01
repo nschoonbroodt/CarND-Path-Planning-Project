@@ -34,7 +34,7 @@ using json = nlohmann::json;
 #define MIN_SAFE_DISTANCE 30.0
 #define MIN_SAFE_DISTANCE_CHANGE 10.0
 #define SPEED_MARGIN 2
-#define OVERTAKE_DISTANCE 50
+#define OVERTAKE_DISTANCE 50    
 /* End of Tuneable Parameters Section */
 
 /* State machine mode */
@@ -489,17 +489,6 @@ int main() {
                 next_y_vals.push_back(ref_y + eval_x*sin(ref_yaw)+eval_y*cos(ref_yaw));
             }
             
-            /*
-            double dist_inc = cur_tar_speed*DT;
-            for (int i=1; i<=NB_POINTS; ++i) {
-                double next_s = car_s + dist_inc*(i+1);
-                double next_d = cur_lane*4.+2.;
-                vector<double> xy = getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-                
-                next_x_vals.push_back(xy[0]);
-                next_y_vals.push_back(xy[1]);
-            }
-            */
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
